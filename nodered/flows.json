@@ -1,0 +1,151 @@
+[
+    {
+        "id": "f6f2187d.f17ca8",
+        "type": "tab",
+        "label": "Flow 1",
+        "disabled": false,
+        "info": ""
+    },
+    {
+        "id": "10b223d27bd58aea",
+        "type": "kafkajs-client",
+        "name": "",
+        "brokers": "kafka:29092",
+        "clientid": "nodered-ecg",
+        "connectiontimeout": 3000,
+        "requesttimeout": 25000,
+        "advancedretry": false,
+        "maxretrytime": 30000,
+        "initialretrytime": 300,
+        "factor": 0.2,
+        "multiplier": 2,
+        "retries": 5,
+        "auth": "none",
+        "tlsselfsign": false,
+        "tlscacert": "",
+        "tlsclientcert": "",
+        "tlsprivatekey": "",
+        "tlspassphrase": "",
+        "saslssl": true,
+        "saslmechanism": "plain",
+        "loglevel": "error"
+    },
+    {
+        "id": "19b63bec8b3a2111",
+        "type": "influxdb",
+        "hostname": "127.0.0.1",
+        "port": 8086,
+        "protocol": "http",
+        "database": "database",
+        "name": "ECG InfluxDB",
+        "usetls": false,
+        "tls": "",
+        "influxdbVersion": "2.0",
+        "url": "http://influxdb:8086",
+        "timeout": 10,
+        "rejectUnauthorized": false
+    },
+    {
+        "id": "3cc11d24.ff01a2",
+        "type": "comment",
+        "z": "f6f2187d.f17ca8",
+        "name": "WARNING: please check you have started this container with a volume that is mounted to /data\\n otherwise any flow changes are lost when you redeploy or upgrade the container\\n (e.g. upgrade to a more recent node-red docker image).\\n  If you are using named volumes you can ignore this warning.\\n Double click or see info side panel to learn how to start Node-RED in Docker to save your work",
+        "info": "\nTo start docker with a bind mount volume (-v option), for example:\n\n```\ndocker run -it -p 1880:1880 -v /home/user/node_red_data:/data --name mynodered nodered/node-red\n```\n\nwhere `/home/user/node_red_data` is a directory on your host machine where you want to store your flows.\n\nIf you do not do this then you can experiment and redploy flows, but if you restart or upgrade the container the flows will be disconnected and lost. \n\nThey will still exist in a hidden data volume, which can be recovered using standard docker techniques, but that is much more complex than just starting with a named volume as described above.",
+        "x": 350,
+        "y": 80,
+        "wires": []
+    },
+    {
+        "id": "44a36befb70d5712",
+        "type": "kafkajs-consumer",
+        "z": "f6f2187d.f17ca8",
+        "name": "ingestion-start",
+        "client": "10b223d27bd58aea",
+        "groupid": "nodered-ecg",
+        "topic": "ecg.raw",
+        "advancedoptions": false,
+        "autocommitinterval": 5000,
+        "autocommitthreshold": 100,
+        "sessiontimeout": 30000,
+        "rebalancetimeout": 60000,
+        "heartbeatinterval": 3000,
+        "metadatamaxage": 300000,
+        "maxbytesperpartition": 1048576,
+        "minbytes": 1,
+        "maxbytes": 10485760,
+        "maxwaittimeinms": 5000,
+        "frombeginning": false,
+        "clearoffsets": false,
+        "allowautotopiccreation": false,
+        "x": 130,
+        "y": 340,
+        "wires": [
+            [
+                "f7b31a94b4cb59b8"
+            ]
+        ]
+    },
+    {
+        "id": "5e36dae06af03c05",
+        "type": "debug",
+        "z": "f6f2187d.f17ca8",
+        "name": "debug 1",
+        "active": true,
+        "tosidebar": true,
+        "console": false,
+        "tostatus": false,
+        "complete": "false",
+        "statusVal": "",
+        "statusType": "auto",
+        "x": 620,
+        "y": 320,
+        "wires": []
+    },
+    {
+        "id": "f7b31a94b4cb59b8",
+        "type": "function",
+        "z": "f6f2187d.f17ca8",
+        "name": "function 1",
+        "func": "let data;\n\ntry {\n    data = JSON.parse(msg.payload.value);\n} catch (err) {\n    node.error(\"Could not parse ECG value: \" + err.message, msg);\n    return null;\n}\n\nlet leads = data.leads;\n\nif (!leads) {\n    node.error(\"No leads found in ECG data\", msg);\n    return null;\n}\n\nnode.warn(\"LEADS: \" + Object.keys(leads).join(\", \"));\n\n\n// Process every lead that exists\nfor (let leadName of Object.keys(leads)) {\n\n    let samples = leads[leadName];\n\n    // We expect an array of ECG samples\n    if (!Array.isArray(samples)) {\n        node.warn(\"Skipping \" + leadName + \" - not an array\");\n        continue;\n    }\n\n    node.warn(\n        \"Processing \" + leadName +\n        \" | samples: \" + samples.length\n    );\n\n\n    // Send every ECG sample as one InfluxDB point\n    for (let i = 0; i < samples.length; i++) {\n\n        let value = Number(samples[i]);\n\n        if (!Number.isFinite(value)) {\n            continue;\n        }\n\n        let outMsg = {\n            payload: [\n                {\n                    value: value\n                },\n                {\n                    lead: leadName\n                }\n            ]\n        };\n\n        node.send(outMsg);\n    }\n}\n\nreturn null;",
+        "outputs": 1,
+        "timeout": 0,
+        "noerr": 0,
+        "initialize": "",
+        "finalize": "",
+        "libs": [],
+        "x": 280,
+        "y": 400,
+        "wires": [
+            [
+                "e8fea134e9b9fddf"
+            ]
+        ]
+    },
+    {
+        "id": "e8fea134e9b9fddf",
+        "type": "influxdb out",
+        "z": "f6f2187d.f17ca8",
+        "influxdb": "19b63bec8b3a2111",
+        "name": "ECG InfluxDB",
+        "measurement": "ecg",
+        "precision": "",
+        "retentionPolicy": "",
+        "database": "database",
+        "precisionV18FluxV20": "ms",
+        "retentionPolicyV18Flux": "",
+        "org": "ecg",
+        "bucket": "ecg_data",
+        "x": 440,
+        "y": 300,
+        "wires": []
+    },
+    {
+        "id": "b20601072dd414d6",
+        "type": "global-config",
+        "env": [],
+        "modules": {
+            "node-red-contrib-kafkajs": "0.0.7",
+            "node-red-contrib-influxdb": "0.7.0"
+        }
+    }
+]

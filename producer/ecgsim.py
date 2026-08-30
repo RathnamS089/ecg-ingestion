@@ -3,13 +3,14 @@ import os
 import time
 import wfdb
 from kafka import KafkaProducer
+from datetime import datetime
 KAFKA_BOOTSTRAP = "localhost:9092"
 TOPIC = "ecg.raw"
 DB_DIR = "../mitbh"
 SAMPLE_RATE = 360
 WINDOW_SIZE = SAMPLE_RATE
 TEST_WINDOWS = 10
-
+SPEED_MULTIPLIER=10.0
 def main():
     record_names = []
     for filename in os.listdir(DB_DIR):
@@ -24,7 +25,7 @@ def main():
         acks="all",
         linger_ms=5,
     )
-    interval = 1.0
+    interval = 1.0/SPEED_MULTIPLIER
     try:
         for record_name in record_names:
             record = wfdb.rdrecord(
@@ -35,6 +36,7 @@ def main():
             print(
                 f"\nStreaming record {record_name}"
             )
+            BASETIME=int(time.time()*1000)
             print(
                 f"Samples: {n_samples} | "
                 f"Leads: {n_leads} | "
@@ -44,9 +46,13 @@ def main():
                 f"Full duration: "
                 f"{n_samples / SAMPLE_RATE:.1f} seconds"
             )
+
             # Stream only the first 10 one-second windows
             for window_number in range(TEST_WINDOWS):
                 start = window_number * WINDOW_SIZE
+                relative_seconds=start/SAMPLE_RATE
+                window_timestamp=BASETIME+int(relative_seconds*1000)
+                print("Window start:",datetime.fromtimestamp(window_timestamp/1000).strftime("%H:%M:%S"))
                 if start >= n_samples:
                     break
                 end = min(
@@ -56,7 +62,7 @@ def main():
                 window = record.p_signal[start:end, :]
                 payload = {
                     "record": record_name,
-                    "timestamp": start / SAMPLE_RATE,
+                    "timestamp":window_timestamp,
                     "start_sample": start,
                     "sampling_rate": SAMPLE_RATE,
                     "leads": {

@@ -4,20 +4,27 @@ import time
 import wfdb
 from kafka import KafkaProducer
 from datetime import datetime
+
 KAFKA_BOOTSTRAP = "localhost:9092"
 TOPIC = "ecg.raw"
 DB_DIR = "../mitbh"
+RECORD_NAME = "100"
 SAMPLE_RATE = 360
-WINDOW_SIZE = SAMPLE_RATE
-TEST_WINDOWS = 10
-SPEED_MULTIPLIER=10.0
+WINDOW_SIZE = SAMPLE_RATE          # 360 samples = 1 second
+TOTAL_WINDOWS = 360                # 360 seconds of data
+
+
 def main():
-    record_names = []
-    for filename in os.listdir(DB_DIR):
-        if filename.endswith(".hea"):
-            record_names.append(filename[:-4])
-    record_names.sort()
-    print("Records found:", record_names)
+    record_path = os.path.join(DB_DIR, RECORD_NAME)
+    record = wfdb.rdrecord(record_path)
+    n_samples, n_leads = record.p_signal.shape
+    lead_names = record.sig_name
+
+    print(f"Record       : {RECORD_NAME}")
+    print(f"Samples      : {n_samples} | Leads: {n_leads} | Rate: {SAMPLE_RATE} Hz")
+    print(f"Full duration: {n_samples / SAMPLE_RATE:.1f}s")
+    print(f"Streaming    : {TOTAL_WINDOWS} windows (0-{TOTAL_WINDOWS - 1}s)\n")
+
     producer = KafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP,
         value_serializer=lambda v: json.dumps(v).encode("utf-8"),
@@ -25,71 +32,53 @@ def main():
         acks="all",
         linger_ms=5,
     )
-    interval = 1.0/SPEED_MULTIPLIER
+
+    basetime = int(time.time() * 1000)
+
     try:
-        for record_name in record_names:
-            record = wfdb.rdrecord(
-                os.path.join(DB_DIR, record_name)
-            )
-            n_samples, n_leads = record.p_signal.shape
-            lead_names = record.sig_name
-            print(
-                f"\nStreaming record {record_name}"
-            )
-            BASETIME=int(time.time()*1000)
-            print(
-                f"Samples: {n_samples} | "
-                f"Leads: {n_leads} | "
-                f"Sample rate: {SAMPLE_RATE} Hz"
-            )
-            print(
-                f"Full duration: "
-                f"{n_samples / SAMPLE_RATE:.1f} seconds"
+        for win in range(TOTAL_WINDOWS):
+            start = win * WINDOW_SIZE
+            if start >= n_samples:
+                print(f"Reached end of record at window {win}")
+                break
+
+            end = min(start + WINDOW_SIZE, n_samples)
+            window_ts = basetime + int((start / SAMPLE_RATE) * 1000)
+            window = record.p_signal[start:end, :]
+
+            payload = {
+                "record": RECORD_NAME,
+                "timestamp": window_ts,
+                "start_sample": start,
+                "sampling_rate": SAMPLE_RATE,
+                "leads": {
+                    lead_names[j]: window[:, j].tolist()
+                    for j in range(n_leads)
+                },
+            }
+
+            producer.send(
+                TOPIC,
+                key=f"{RECORD_NAME}:{start}",
+                value=payload,
             )
 
-            # Stream only the first 10 one-second windows
-            for window_number in range(TEST_WINDOWS):
-                start = window_number * WINDOW_SIZE
-                relative_seconds=start/SAMPLE_RATE
-                window_timestamp=BASETIME+int(relative_seconds*1000)
-                print("Window start:",datetime.fromtimestamp(window_timestamp/1000).strftime("%H:%M:%S"))
-                if start >= n_samples:
-                    break
-                end = min(
-                    start + WINDOW_SIZE,
-                    n_samples
-                )
-                window = record.p_signal[start:end, :]
-                payload = {
-                    "record": record_name,
-                    "timestamp":window_timestamp,
-                    "start_sample": start,
-                    "sampling_rate": SAMPLE_RATE,
-                    "leads": {
-                        lead_names[j]: window[:, j].tolist()
-                        for j in range(n_leads)
-                    }
-                }
-                producer.send(
-                    TOPIC,
-                    key=f"{record_name}:{start}",
-                    value=payload
-                )
-                print(
-                    f"  -> window {window_number + 1}/{TEST_WINDOWS} "
-                    f"| samples {start}-{end - 1} "
-                    f"| timestamp {start / SAMPLE_RATE:.0f}s"
-                )
-                time.sleep(interval)
+            ts_str = datetime.fromtimestamp(window_ts / 1000).strftime("%H:%M:%S")
             print(
-                f"Finished test stream for record {record_name}"
+                f"  [{win + 1:3d}/{TOTAL_WINDOWS}] "
+                f"samples {start:>6d}-{end - 1:<6d} | "
+                f"t={start / SAMPLE_RATE:>5.0f}s | {ts_str}"
             )
+            time.sleep(1)
+
+        print(f"\n✅ Finished streaming record {RECORD_NAME}")
     except KeyboardInterrupt:
         print("\nStopping...")
     finally:
         producer.flush()
         producer.close()
         print("Done")
+
 
 if __name__ == "__main__":
     main()
